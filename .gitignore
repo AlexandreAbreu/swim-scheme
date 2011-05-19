@@ -1,0 +1,6 @@
+toto.c
+Release/
+Debug/
+*.ncb
+*.suo
+*.user

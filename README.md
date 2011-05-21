@@ -2,7 +2,7 @@
 
 ## General view
 
-This is an **in-progress** attempt to follow and expand on Abdoulaziz Ghuloum in his paper "An Incremental Approach to Compiler Construction".
+This is an **in-progress** attempt to follow and expand on Abdoulaziz Ghuloum in his paper "An Incremental Approach to Compiler Construction". It currently generated (badly) x86 Windows code. I am planning to potentially add some ATmega328 (Arduino) code.
 
 I will just use it as a starting point to experiment on some things and potentially expand on something more meaningful (to me).
 

@@ -5,6 +5,7 @@
 ;; call w/ e.g. (dump-to-file "./cpp/scheme_func.asm" (lambda () (define-procs (lambda () (define-proc (lambda () (compile-program '(add1 42))))))))
 
 ;; string atom -> string
+
 (define *function-name* "scheme_func")
 
 (define *primitive-ops* '(add1 sub1 integer->char char->integer zero?))
@@ -45,17 +46,21 @@
     )
   )
 
+;; TODO macroify all the masks
+(define fixnum-tag 0)
 (define fixnum-shift 2)
+(define fixnum-mask 3)
 (define char-shift 8)
 (define char-tag 15)
 (define boolean-shift 7)
+(define boolean-mask #b1111111)
 (define boolean-tag #b0011111)
 (define empty-list-value 47)
 
 (define get-immediate-representation
   (lambda (element)
     (cond
-      ((integer? element) (arithmetic-shift element fixnum-shift))
+      ((integer? element) (bitwise-ior (arithmetic-shift element fixnum-shift) fixnum-tag))
       ((boolean? element) (bitwise-ior (arithmetic-shift element char-shift) char-tag))
       ((char? element) (bitwise-ior (arithmetic-shift element boolean-shift) boolean-tag))
       ((null? element) empty-list-value)
@@ -174,6 +179,7 @@
 (define cmp "cmp")
 (define xor "xor")
 (define sete "sete")
+(define setne "sete")
 
 (define emit
   (lambda (op-code . parameters)
@@ -224,6 +230,36 @@
           (emit-expression (first-primitive-call-operand expression) target)
           (apply emit (emit-code-for-expressions `(,(make-instruction shr) ,(make-registry eax) ,(make-immediate 6)) target))
           )
+         ((null?)
+          ;; non check on validity of the value TODO
+          (emit-expression (first-primitive-call-operand expression) target)
+          (apply emit (emit-code-for-expressions `(,(make-instruction cmp) ,(make-registry eax) ,(make-immediate empty-list-value)) target))
+          ;; TODO this is just to emit a boolean this should be refactored (since used all over)
+          (apply emit (emit-code-for-expressions `(,(make-instruction xor) ,(make-registry eax) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction sete) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction shl) ,(make-registry eax) ,(make-immediate boolean-shift)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction or-inst) ,(make-registry eax) ,(make-immediate boolean-tag)) target))
+          )
+         ((integer?)
+          (emit-expression (first-primitive-call-operand expression) target)
+          (apply emit (emit-code-for-expressions `(,(make-instruction and-inst) ,(make-registry eax) ,(make-immediate fixnum-mask)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction cmp) ,(make-registry eax) ,(make-immediate fixnum-tag)) target))
+          ;; TODO this is just to emit a boolean this should be refactored (since used all over)
+          (apply emit (emit-code-for-expressions `(,(make-instruction xor) ,(make-registry eax) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction sete) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction shl) ,(make-registry eax) ,(make-immediate boolean-shift)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction or-inst) ,(make-registry eax) ,(make-immediate boolean-tag)) target))
+          )
+         ((boolean?)
+          (emit-expression (first-primitive-call-operand expression) target)
+          (apply emit (emit-code-for-expressions `(,(make-instruction and-inst) ,(make-registry eax) ,(make-immediate boolean-mask)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction cmp) ,(make-registry eax) ,(make-immediate boolean-tag)) target))
+          ;; TODO this is just to emit a boolean this should be refactored (since used all over)
+          (apply emit (emit-code-for-expressions `(,(make-instruction xor) ,(make-registry eax) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction sete) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction shl) ,(make-registry eax) ,(make-immediate boolean-shift)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction or-inst) ,(make-registry eax) ,(make-immediate boolean-tag)) target))
+          )
          ((zero?)
           ;; based on eax only
           ;; move value -> eax, no type validation!!
@@ -237,10 +273,13 @@
          ((not)
           ;; based on eax only
           ;; move value -> eax, no type validation!!
+          ;; We assume that we have a boolean
           (emit-expression (first-primitive-call-operand expression) target)
+          (apply emit (emit-code-for-expressions `(,(make-instruction shr) ,(make-registry eax) ,(make-immediate boolean-shift)) target))
           (apply emit (emit-code-for-expressions `(,(make-instruction cmp) ,(make-registry eax) ,(make-immediate 0)) target))
+          ;; TODO this is just to emit a boolean this should be refactored (since used all over)
           (apply emit (emit-code-for-expressions `(,(make-instruction xor) ,(make-registry eax) ,(make-registry eax)) target))
-          (apply emit (emit-code-for-expressions `(,(make-instruction sete) ,(make-registry eax)) target))
+          (apply emit (emit-code-for-expressions `(,(make-instruction setne) ,(make-registry eax)) target))
           (apply emit (emit-code-for-expressions `(,(make-instruction shl) ,(make-registry eax) ,(make-immediate boolean-shift)) target))
           (apply emit (emit-code-for-expressions `(,(make-instruction or-inst) ,(make-registry eax) ,(make-immediate boolean-tag)) target))
           )
@@ -251,71 +290,78 @@
     )
   )
 
+;; still very dummy, clumsy but slightly better
+
+(define display-header-for-target
+  (lambda (target)
+    (let ([linux-header ("\t.text\n"
+                         "\t.p2align 4,,15\n"
+                         ".globl	scheme_func\n"
+                         "\t.type	scheme_func, @function\n")]
+          [windows-header (".686P\n"
+                           ".XMM\n"
+                           "include listing.inc\n"
+                           ".model	flat\n"
+                           "INCLUDELIB MSVCRTD\n"
+                           "INCLUDELIB OLDNAMES\n"
+                           "PUBLIC	_scheme_func\n")]
+          )
+      (case target
+        ((x86-linux)
+         (apply display linux-header)
+         )
+        ((x86-windows)
+         (apply display windows-header)
+         )
+        )
+      )
+    )
+  )
+
+(define define-procs-for-target
+  (lambda (procs target)
+    (case target
+      ((x86-linux)
+       (display-header-for-target target)
+       (procs)
+       )
+      ((x86-windows)
+       (display-header-for-target target)
+       (display "_TEXT	SEGMENT\n")
+       (procs)
+       (display "_TEXT	ENDS\n")
+       (display "END\n")
+       )
+      )
+    )
+  )
+
+(define define-proc-for-target
+  (lambda (proc target)
+    (case target
+      ((x86-linux)
+       (begin
+         (display "scheme_func:\n")
+         (proc)
+         ;; should ret, but we do not mess w/ esp yet
+         ;; (display "ret\n")
+         )
+       )
+      ((x86-windows)
+       (begin
+         (display "_scheme_func	PROC\n")
+         (proc)
+         (display "ret 0\n")
+         (display "_scheme_func	ENDP\n")
+         )
+       )
+      )
+    )
+  )
+
 (define compile-program
-  (lambda (p)
-    (emit-expression p 'x86-linux)
-    )
-  )
-
-(define display-header-linux
-  (lambda ()
-    (display "\t.text\n")
-    (display "\t.p2align 4,,15\n")
-    (display ".globl	scheme_func\n")
-    (display "\t.type	scheme_func, @function\n")
-    )
-  )
-
-(define display-header
-  (lambda ()
-    (display ".686P\n")
-    (display ".XMM\n")
-    (display "include listing.inc\n")
-    (display ".model	flat\n")
-    (display "INCLUDELIB MSVCRTD\n")
-    (display "INCLUDELIB OLDNAMES\n")
-    (display "PUBLIC	_scheme_func\n")
-    )
-  )
-
-(define define-procs-linux
-  (lambda (procs)
-    (begin
-      (display-header)
-      (procs)
-      )
-    )
-  )
-
-(define define-proc-linux
-  (lambda (proc)
-    (begin
-      (display "scheme_func:\n")
-      (proc)
-      )
-    )
-  )
-
-(define define-procs
-  (lambda (procs)
-    (begin
-      (display-header)
-      (display "_TEXT	SEGMENT\n")
-      (procs)
-      (display "_TEXT	ENDS\n")
-      (display "END\n")
-      )
-    )
-  )
-
-(define define-proc
-  (lambda (proc)
-    (begin
-      (display "_scheme_func	PROC\n")
-      (proc)
-      (display "ret 0\n")
-      (display "_scheme_func	ENDP\n")
-      )
+  (lambda (p target)
+    (emit-expression p target)
     )
   )
 
